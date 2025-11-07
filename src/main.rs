@@ -301,7 +301,6 @@ impl Editor {
                 stdout,
                 cursor::MoveTo(0, self.screen_rows as u16),
                 terminal::Clear(ClearType::CurrentLine),
-                // ‼️ Use style::Print for command prompt
                 style::Print(&command)
             )
             .unwrap();
