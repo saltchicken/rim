@@ -1,14 +1,13 @@
-use std::env;
-use std::fs;
-use std::io::{Result, Write, stdout};
-use std::time::Duration;
-
 use crossterm::{
     cursor::{self, SetCursorStyle},
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     execute, queue, style,
     terminal::{self, ClearType},
 };
+use std::env;
+use std::fs;
+use std::io::{Result, Write, stdout};
+use std::time::Duration;
 
 enum Mode {
     Normal,
@@ -34,6 +33,8 @@ struct Editor {
     mode: Mode,
     /// The name of the file being edited
     filename: Option<String>,
+    /// ‼️ True if the file has unsaved changes.
+    dirty: bool,
 }
 
 impl Editor {
@@ -41,6 +42,7 @@ impl Editor {
     fn new() -> Result<Self> {
         let (cols, rows) = terminal::size()?;
         terminal::enable_raw_mode()?;
+
         let mut editor = Self {
             cx: 0,
             cy: 0,
@@ -51,6 +53,7 @@ impl Editor {
             status_msg: "HELP: :q = quit".to_string(),
             mode: Mode::Normal,
             filename: None,
+            dirty: false, // ‼️ Initialize dirty flag
         };
 
         if let Some(filename) = env::args().nth(1) {
@@ -72,10 +75,12 @@ impl Editor {
                     self.rows.push(String::new());
                 }
                 self.status_msg = format!("Loaded file: {}", filename);
+                self.dirty = false; // ‼️ Reset dirty flag
             }
             Err(e) => {
                 self.rows.push(String::new());
                 self.status_msg = format!("Failed to load file: {}", e);
+                self.dirty = false; // ‼️ Reset dirty flag (it's a new empty buffer)
             }
         }
     }
@@ -83,7 +88,6 @@ impl Editor {
     /// The main event loop, waiting for input and processing it.
     fn run(&mut self) -> Result<()> {
         self.refresh_screen()?;
-
         loop {
             if event::poll(Duration::from_millis(100))? {
                 if let Event::Key(key_event) = event::read()? {
@@ -93,12 +97,12 @@ impl Editor {
                     }
                 }
             }
-
             self.refresh_screen()?;
         }
     }
 
     // --- Main Keypress Router ---
+
     /// Routes key events to the correct handler based on the current mode.
     fn process_keypress(&mut self, event: KeyEvent) -> Result<bool> {
         match self.mode {
@@ -108,8 +112,14 @@ impl Editor {
     }
 
     // --- Normal Mode Logic ---
+
     /// Handles key events in Normal mode.
     fn process_normal_keypress(&mut self, event: KeyEvent) -> Result<bool> {
+        // ‼️ Clear status message on most keypresses
+        if !matches!(event.code, KeyCode::Char(':')) {
+            self.status_msg.clear();
+        }
+
         match event.code {
             // --- MOVEMENT ---
             KeyCode::Char('h') | KeyCode::Left => {
@@ -149,7 +159,6 @@ impl Editor {
                     }
                 }
             }
-
             // --- SCROLLING (half-page) ---
             KeyCode::Char('d') if event.modifiers == KeyModifiers::CONTROL => {
                 let new_offset =
@@ -166,20 +175,17 @@ impl Editor {
                 self.cy = (self.cy + dy).min(self.screen_rows - 1);
                 self.scroll_check();
             }
-
             // --- MODE SWITCHING ---
             KeyCode::Char('i') => {
                 self.mode = Mode::Insert;
                 self.status_msg = "-- INSERT --".to_string();
             }
-
             // --- COMMANDS ---
             KeyCode::Char(':') => {
                 if self.prompt_command() == false {
                     return Ok(false); // Quit
                 }
             }
-
             _ => {}
         }
 
@@ -189,31 +195,29 @@ impl Editor {
     }
 
     //  --- Insert Mode Logic ---
+
     /// Handles key events in Insert mode.
     fn process_insert_keypress(&mut self, event: KeyEvent) -> Result<bool> {
+        self.status_msg.clear(); // ‼️ Clear status message on any insert mode keypress
         match event.code {
             // --- MODE SWITCHING ---
             KeyCode::Esc => {
                 self.mode = Mode::Normal;
-                self.status_msg = "".to_string();
+                self.status_msg.clear(); // ‼️ Use clear()
                 self.clamp_cursor_to_line();
             }
-
             // --- TYPING ---
             KeyCode::Char(c) => {
                 self.insert_char(c);
             }
-
             // --- ENTER ---
             KeyCode::Enter => {
                 self.insert_new_line();
             }
-
             // --- BACKSPACE ---
             KeyCode::Backspace => {
                 self.delete_char();
             }
-
             _ => {}
         }
         Ok(true)
@@ -230,6 +234,7 @@ impl Editor {
             }
             line.insert(self.cx, c);
             self.cx += 1;
+            self.dirty = true; // ‼️ Mark as dirty
         }
     }
 
@@ -241,10 +246,10 @@ impl Editor {
             if self.cx > line_len {
                 self.cx = line_len;
             }
-
             // Split the current line at the cursor
             let new_line = line.split_off(self.cx);
             self.rows.insert(file_row + 1, new_line);
+            self.dirty = true; // ‼️ Mark as dirty
 
             // Move cursor
             self.cx = 0;
@@ -259,13 +264,13 @@ impl Editor {
     /// Deletes a character at the cursor position (Backspace).
     fn delete_char(&mut self) {
         let file_row = self.cy + self.row_offset;
-
         if self.cx == 0 {
             // At the start of a line, join with the previous line
             if file_row > 0 {
                 let prev_line = self.rows.remove(file_row);
                 let prev_line_len = self.rows[file_row - 1].len();
                 self.rows[file_row - 1].push_str(&prev_line);
+                self.dirty = true; // ‼️ Mark as dirty
 
                 // Move cursor
                 if self.cy > 0 {
@@ -282,10 +287,10 @@ impl Editor {
                 if self.cx > line_len {
                     self.cx = line_len;
                 }
-
                 if self.cx > 0 {
                     line.remove(self.cx - 1);
                     self.cx -= 1;
+                    self.dirty = true; // ‼️ Mark as dirty
                 }
             }
         }
@@ -309,22 +314,63 @@ impl Editor {
             if let Ok(Event::Key(key_event)) = event::read() {
                 match key_event.code {
                     KeyCode::Enter => {
-                        if command == ":q" {
-                            return false; // User wants to quit
+                        // ‼️ Parse the command by splitting on whitespace
+                        let parts: Vec<&str> = command.split_whitespace().collect();
+                        if parts.is_empty() {
+                            return true; // Should not happen
                         }
-                        if command == ":w" {
-                            self.save_file();
-                            return true;
+
+                        // ‼️ Handle commands using match
+                        match parts[0] {
+                            ":q" => {
+                                // ‼️ Check dirty flag
+                                if self.dirty {
+                                    self.status_msg =
+                                        "No write since last change (use :q! to override)"
+                                            .to_string();
+                                    return true; // Don't quit
+                                }
+                                return false; // User wants to quit
+                            }
+                            ":q!" => {
+                                return false; // Force quit
+                            }
+                            ":w" => {
+                                if parts.len() > 1 {
+                                    // ‼️ :w <filename>
+                                    self.filename = Some(parts[1].to_string());
+                                    self.save_file();
+                                } else {
+                                    // ‼️ :w
+                                    self.save_file();
+                                }
+                                return true;
+                            }
+                            ":wq" => {
+                                let save_success = if parts.len() > 1 {
+                                    // ‼️ :wq <filename>
+                                    self.filename = Some(parts[1].to_string());
+                                    self.save_file()
+                                } else {
+                                    // ‼️ :wq
+                                    self.save_file()
+                                };
+
+                                // ‼️ Only quit if save was successful or file wasn't dirty
+                                if save_success || !self.dirty {
+                                    return false; // Quit
+                                } else {
+                                    return true; // Don't quit, save failed
+                                }
+                            }
+                            _ => {
+                                self.status_msg = format!("Unknown command: {}", command);
+                                return true;
+                            }
                         }
-                        if command == ":wq" {
-                            self.save_file();
-                            return false; // User wants to quit
-                        }
-                        self.status_msg = format!("Unknown command: {}", command);
-                        return true;
                     }
                     KeyCode::Esc => {
-                        self.status_msg = "".to_string();
+                        self.status_msg.clear(); // ‼️ Use clear()
                         return true; // Abort command
                     }
                     KeyCode::Char(c) => {
@@ -333,7 +379,7 @@ impl Editor {
                     KeyCode::Backspace => {
                         command.pop();
                         if command.is_empty() {
-                            self.status_msg = "".to_string();
+                            self.status_msg.clear(); // ‼️ Use clear()
                             return true; // Aborted by deleting ':'
                         }
                     }
@@ -344,19 +390,24 @@ impl Editor {
     }
 
     /// Saves the current buffer to the file.
-    fn save_file(&mut self) {
+    /// ‼️ Returns true on success, false on failure (e.g., no filename).
+    fn save_file(&mut self) -> bool {
         if let Some(filename) = &self.filename {
             match fs::write(filename, self.rows.join("\n")) {
                 Ok(_) => {
                     self.status_msg = format!("Saved file: {}", filename);
+                    self.dirty = false; // ‼️ Clear dirty flag on successful save
+                    true // ‼️ Return success
                 }
                 Err(e) => {
                     self.status_msg = format!("Error saving file: {}", e);
+                    false // ‼️ Return failure
                 }
             }
         } else {
-            // TODO: Implement "Save As" logic in prompt_command
+            // ‼️ TODO removed, this logic is now correct.
             self.status_msg = "No filename specified. Use :w <filename>".to_string();
+            false // ‼️ Return failure
         }
     }
 
@@ -383,9 +434,7 @@ impl Editor {
         // In insert mode, cursor can be one past the line
         let cx = self.cx;
         let cy = self.cy;
-
         queue!(stdout, cursor::MoveTo(cx as u16, cy as u16), cursor::Show)?;
-
         stdout.flush()
     }
 
@@ -482,15 +531,9 @@ impl Editor {
             Mode::Normal => "-- NORMAL --",
             Mode::Insert => "-- INSERT --",
         };
+
         let file_row = self.cy + self.row_offset + 1;
         let total_rows = self.rows.len();
-
-        // Show status message if it exists, otherwise show mode
-        let left_status = if !self.status_msg.is_empty() {
-            &self.status_msg
-        } else {
-            mode_str
-        };
 
         let right_status = format!(
             "{}:{} -- {}/{}",
@@ -499,6 +542,18 @@ impl Editor {
             file_row,
             total_rows
         );
+
+        // ‼️ Build left status string
+        let left_status = if !self.status_msg.is_empty() {
+            // ‼️ Show status message if one exists
+            self.status_msg.clone()
+        } else {
+            // ‼️ Show mode, filename, and dirty status
+            let filename_str = self.filename.as_deref().unwrap_or("[No Name]");
+            let dirty_str = if self.dirty { " [+]" } else { "" };
+            format!("{} \"{}\"{}", mode_str, filename_str, dirty_str)
+        };
+
         let right_len = right_status.len();
         let left_len = left_status
             .len()
@@ -509,12 +564,11 @@ impl Editor {
         // Use style::Print for status bar content
         queue!(
             stdout,
-            style::Print(left_status),
+            style::Print(&left_status), // ‼️ Use referenced string
             style::Print(padding),
             style::Print(right_status),
             style::ResetColor
         )?;
-
         Ok(())
     }
 }
