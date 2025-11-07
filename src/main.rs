@@ -1,19 +1,15 @@
 use std::env;
-// ‼️ Removed unused Error import
 use std::fs;
 use std::io::{Result, Write, stdout};
 use std::time::Duration;
 
 use crossterm::{
-    cursor::{self, SetCursorStyle}, // ‼️ Removed `CursorShape` import
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers}, // ‼️ Added KeyModifiers
-    execute,
-    queue,
-    style,
+    cursor::{self, SetCursorStyle},
+    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
+    execute, queue, style,
     terminal::{self, ClearType},
 };
 
-// ‼️ Added Mode enum to track editor state
 enum Mode {
     Normal,
     Insert,
@@ -35,9 +31,9 @@ struct Editor {
     row_offset: usize,
     /// A message to display in the status bar.
     status_msg: String,
-    mode: Mode, // ‼️ Added mode field
+    mode: Mode,
     /// The name of the file being edited
-    filename: Option<String>, // ‼️ Added filename to save later
+    filename: Option<String>,
 }
 
 impl Editor {
@@ -53,12 +49,12 @@ impl Editor {
             rows: Vec::new(),
             row_offset: 0,
             status_msg: "HELP: :q = quit".to_string(),
-            mode: Mode::Normal, // ‼️ Initialize mode to Normal
-            filename: None,     // ‼️ Initialize filename as None
+            mode: Mode::Normal,
+            filename: None,
         };
 
         if let Some(filename) = env::args().nth(1) {
-            editor.filename = Some(filename.clone()); // ‼️ Store the filename
+            editor.filename = Some(filename.clone());
             editor.load_file(&filename);
         } else {
             editor.rows.push(String::new());
@@ -72,7 +68,6 @@ impl Editor {
         match fs::read_to_string(filename) {
             Ok(content) => {
                 self.rows = content.lines().map(|s| s.to_string()).collect();
-                // ‼️ Ensure there's at least one (empty) line if file is empty
                 if self.rows.is_empty() {
                     self.rows.push(String::new());
                 }
@@ -103,7 +98,7 @@ impl Editor {
         }
     }
 
-    // ‼️ --- Main Keypress Router ---
+    // --- Main Keypress Router ---
     /// Routes key events to the correct handler based on the current mode.
     fn process_keypress(&mut self, event: KeyEvent) -> Result<bool> {
         match self.mode {
@@ -112,7 +107,7 @@ impl Editor {
         }
     }
 
-    // ‼️ --- Normal Mode Logic ---
+    // --- Normal Mode Logic ---
     /// Handles key events in Normal mode.
     fn process_normal_keypress(&mut self, event: KeyEvent) -> Result<bool> {
         match event.code {
@@ -193,7 +188,7 @@ impl Editor {
         Ok(true)
     }
 
-    // ‼️ --- Insert Mode Logic ---
+    //  --- Insert Mode Logic ---
     /// Handles key events in Insert mode.
     fn process_insert_keypress(&mut self, event: KeyEvent) -> Result<bool> {
         match event.code {
@@ -201,7 +196,6 @@ impl Editor {
             KeyCode::Esc => {
                 self.mode = Mode::Normal;
                 self.status_msg = "".to_string();
-                // ‼️ Clamp cursor when exiting insert mode
                 self.clamp_cursor_to_line();
             }
 
@@ -220,15 +214,12 @@ impl Editor {
                 self.delete_char();
             }
 
-            // ‼️ You might want to explicitly ignore arrow keys in insert mode,
-            // ‼️ or implement them (which is more complex as it's not "vim-like").
-            // ‼️ For now, they'll just be ignored by the `_` case.
             _ => {}
         }
         Ok(true)
     }
 
-    /// ‼️ Helper: Inserts a character at the cursor position.
+    /// Inserts a character at the cursor position.
     fn insert_char(&mut self, c: char) {
         let file_row = self.cy + self.row_offset;
         if let Some(line) = self.rows.get_mut(file_row) {
@@ -242,7 +233,7 @@ impl Editor {
         }
     }
 
-    /// ‼️ Helper: Inserts a new line at the cursor position.
+    /// Inserts a new line at the cursor position.
     fn insert_new_line(&mut self) {
         let file_row = self.cy + self.row_offset;
         if let Some(line) = self.rows.get_mut(file_row) {
@@ -251,11 +242,11 @@ impl Editor {
                 self.cx = line_len;
             }
 
-            // ‼️ Split the current line at the cursor
+            // Split the current line at the cursor
             let new_line = line.split_off(self.cx);
             self.rows.insert(file_row + 1, new_line);
 
-            // ‼️ Move cursor
+            // Move cursor
             self.cx = 0;
             if self.cy < self.screen_rows - 1 {
                 self.cy += 1;
@@ -265,18 +256,18 @@ impl Editor {
         }
     }
 
-    /// ‼️ Helper: Deletes a character at the cursor position (Backspace).
+    /// Deletes a character at the cursor position (Backspace).
     fn delete_char(&mut self) {
         let file_row = self.cy + self.row_offset;
 
         if self.cx == 0 {
-            // ‼️ At the start of a line, join with the previous line
+            // At the start of a line, join with the previous line
             if file_row > 0 {
                 let prev_line = self.rows.remove(file_row);
                 let prev_line_len = self.rows[file_row - 1].len();
                 self.rows[file_row - 1].push_str(&prev_line);
 
-                // ‼️ Move cursor
+                // Move cursor
                 if self.cy > 0 {
                     self.cy -= 1;
                 } else {
@@ -285,7 +276,7 @@ impl Editor {
                 self.cx = prev_line_len;
             }
         } else {
-            // ‼️ In the middle of a line, remove the character to the left
+            // In the middle of a line, remove the character to the left
             if let Some(line) = self.rows.get_mut(file_row) {
                 let line_len = line.len();
                 if self.cx > line_len {
@@ -316,31 +307,16 @@ impl Editor {
             .unwrap();
             stdout.flush().unwrap();
 
-            // ‼️ Note: print!() doesn't work inside queue!
-            // ‼️ We must use style::Print(). The code was already
-            // ‼️ wrong, this just makes it explicit.
-            // ‼️ The original code had a bug, `print!()` was outside
-            // ‼️ queue! and would write to the wrong place.
-            // ‼️ I will fix it here.
-
-            // ‼️ The `print!` macros in the original function were bugs.
-            // ‼️ They printed *after* the queue! flushed,
-            // ‼️ which would draw the cursor, then the text,
-            // ‼️ leaving the cursor in the wrong place.
-            // ‼️ It's fixed now by using `style::Print` *inside* `queue!`.
-
             if let Ok(Event::Key(key_event)) = event::read() {
                 match key_event.code {
                     KeyCode::Enter => {
                         if command == ":q" {
                             return false; // User wants to quit
                         }
-                        // ‼️ Add :w for save
                         if command == ":w" {
                             self.save_file();
                             return true;
                         }
-                        // ‼️ Add :wq for save and quit
                         if command == ":wq" {
                             self.save_file();
                             return false; // User wants to quit
@@ -368,7 +344,7 @@ impl Editor {
         }
     }
 
-    /// ‼️ Helper: Saves the current buffer to the file.
+    /// Saves the current buffer to the file.
     fn save_file(&mut self) {
         if let Some(filename) = &self.filename {
             match fs::write(filename, self.rows.join("\n")) {
@@ -380,7 +356,7 @@ impl Editor {
                 }
             }
         } else {
-            // ‼️ TODO: Implement "Save As" logic in prompt_command
+            // TODO: Implement "Save As" logic in prompt_command
             self.status_msg = "No filename specified. Use :w <filename>".to_string();
         }
     }
@@ -389,11 +365,9 @@ impl Editor {
     fn refresh_screen(&mut self) -> Result<()> {
         let mut stdout = stdout();
 
-        // ‼️ Set cursor style based on mode
+        // Set cursor style based on mode
         match self.mode {
-            // ‼️ Use `SetCursorStyle::SteadyBlock`
             Mode::Normal => queue!(stdout, SetCursorStyle::SteadyBlock)?,
-            // ‼️ Use `SetCursorStyle::SteadyBar` (which looks like a line)
             Mode::Insert => queue!(stdout, SetCursorStyle::SteadyBar)?,
         }
 
@@ -407,7 +381,7 @@ impl Editor {
         self.draw_rows()?;
         self.draw_status_bar()?;
 
-        // ‼️ In insert mode, cursor can be one past the line
+        // In insert mode, cursor can be one past the line
         let cx = self.cx;
         let cy = self.cy;
 
@@ -440,7 +414,7 @@ impl Editor {
 
         match self.mode {
             Mode::Normal => {
-                // ‼️ In Normal mode, cursor stays *on* the last char
+                // In Normal mode, cursor stays *on* the last char
                 let max_cx = if current_line_len > 0 {
                     current_line_len - 1
                 } else {
@@ -451,7 +425,7 @@ impl Editor {
                 }
             }
             Mode::Insert => {
-                // ‼️ In Insert mode, cursor can go one *past* the last char
+                // In Insert mode, cursor can go one *past* the last char
                 if self.cx > current_line_len {
                     self.cx = current_line_len;
                 }
@@ -504,7 +478,7 @@ impl Editor {
             style::SetForegroundColor(style::Color::Black)
         )?;
 
-        // ‼️ Build status text with Mode
+        // Build status text with Mode
         let mode_str = match self.mode {
             Mode::Normal => "-- NORMAL --",
             Mode::Insert => "-- INSERT --",
@@ -512,7 +486,7 @@ impl Editor {
         let file_row = self.cy + self.row_offset + 1;
         let total_rows = self.rows.len();
 
-        // ‼️ Show status message if it exists, otherwise show mode
+        // Show status message if it exists, otherwise show mode
         let left_status = if !self.status_msg.is_empty() {
             &self.status_msg
         } else {
@@ -533,20 +507,14 @@ impl Editor {
 
         let padding = " ".repeat(self.screen_cols.saturating_sub(left_len + right_len));
 
-        // ‼️ Use style::Print for status bar content
+        // Use style::Print for status bar content
         queue!(
             stdout,
             style::Print(left_status),
             style::Print(padding),
             style::Print(right_status),
-            style::ResetColor // ‼️ Reset colors
+            style::ResetColor
         )?;
-
-        // ‼️ The `print!` macros in the original function were bugs.
-        // ‼️ They printed *outside* the queue, so they would
-        // ‼️ not have the correct background color.
-        // ‼️ This is now fixed by using `style::Print` and
-        // ‼️ `style::ResetColor` *inside* the queue.
 
         Ok(())
     }
@@ -561,7 +529,6 @@ impl Drop for Editor {
             cursor::Show,
             terminal::Clear(ClearType::All),
             cursor::MoveTo(0, 0),
-            // ‼️ Use `SetCursorStyle::DefaultUserShape`
             SetCursorStyle::DefaultUserShape
         )
         .ok();
